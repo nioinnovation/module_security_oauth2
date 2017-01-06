@@ -75,28 +75,35 @@ class TestOAuthenticator(NIOTestCase):
 
         token_jwt = {"email": "myemail@server.com"}
         # Check Bearer prefix
-        with patch.object(Authenticator, '_request_token'):
-            with patch.object(Authenticator, '_verify_access_token',
-                              return_value=token_jwt):
-                request = MagicMock()
-                request.get_header = MagicMock(return_value="Bearer 12345")
-                user = Authenticator.authenticate(request=request)
-                Authenticator.\
-                    _verify_access_token.assert_called_once_with("12345")
-                Authenticator._request_token.assert_called_once()
-                self.assertEqual('myemail@server.com', user.name)
+        with patch.object(Authenticator, '_verify_access_token',
+                          return_value=token_jwt):
+            request = MagicMock()
+            request.get_header = MagicMock(return_value="Bearer 12345")
+            user = Authenticator.authenticate(request=request)
+            Authenticator.\
+                _verify_access_token.assert_called_once_with("12345")
+            self.assertEqual('myemail@server.com', user.name)
 
         # Check OAuth prefix
-        with patch.object(Authenticator, '_request_token'):
-            with patch.object(Authenticator, '_verify_access_token',
-                              return_value=token_jwt):
-                request = MagicMock()
-                request.get_header = MagicMock(return_value="OAuth 45678")
-                user = Authenticator.authenticate(request=request)
-                Authenticator.\
-                    _verify_access_token.assert_called_once_with("45678")
-                Authenticator._request_token.assert_called_once()
-                self.assertEqual('myemail@server.com', user.name)
+        with patch.object(Authenticator, '_verify_access_token',
+                          return_value=token_jwt):
+            request = MagicMock()
+            request.get_header = MagicMock(return_value="OAuth 45678")
+            user = Authenticator.authenticate(request=request)
+            Authenticator.\
+                _verify_access_token.assert_called_once_with("45678")
+            self.assertEqual('myemail@server.com', user.name)
+
+        # patch _request_token and verify since _verify_access_token's purpose
+        # is to add error mgmt. to _request_token's result
+        with patch.object(Authenticator, '_request_token',
+                          return_value=token_jwt):
+            request = MagicMock()
+            request.get_header = MagicMock(return_value="Bearer 12345")
+            user = Authenticator.authenticate(request=request)
+            Authenticator. \
+                _request_token.assert_called_once_with("12345")
+            self.assertEqual('myemail@server.com', user.name)
 
     def test_oAuthenticator2_invalid_prefix(self):
         """ Asserts that when header's prefix is not Bearer nor OAuth,
