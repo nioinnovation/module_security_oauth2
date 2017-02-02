@@ -2,9 +2,10 @@ from unittest.mock import MagicMock, patch
 
 from nio.modules.context import ModuleContext
 from nio.modules.security import Unauthorized
+from nio.modules.web.request import Request
 from nio.testing.test_case import NIOTestCase
 
-from ..authenticator import Authenticator, InvalidToken
+from ..authenticator import Authenticator
 from ..module import OAuth2SecurityModule
 
 
@@ -36,18 +37,16 @@ class TestOAuthenticator(NIOTestCase):
                          Authenticator.validate_uri)
 
     def test_verify_is_called(self):
-        """ Asserts that when 'verify' returns None
-        a 'Guest' (default user) is returned """
-        with patch.object(Authenticator, 'verify', return_value=None):
+        """ Asserts that 'verify' is called and results are as expected """
+        oauth_token = {"email": "myemail@server.com"}
+        with patch.object(Authenticator, 'verify', return_value=oauth_token):
             request = MagicMock()
             args = {"request": request}
             user = Authenticator.authenticate(**args)
-            # Returns default user ?
-            self.assertIsNotNone(user)
-            # Returns user is guest ?
-            self.assertEqual("Guest", user.name)
             # verify called
             Authenticator.verify.assert_called_once_with(request)
+            # verify user
+            self.assertEqual(user.name, oauth_token["email"])
 
     def test_email_is_used(self):
         """ Asserts that email returned from verify is used as user name """
@@ -73,20 +72,20 @@ class TestOAuthenticator(NIOTestCase):
         """ Asserts that OAuth and Bearer tokens are valid perfixes as part of
         the Authenticator header """
 
-        token_jwt = {"email": "myemail@server.com"}
+        oauth_token = {"email": "myemail@server.com"}
         # Check Bearer prefix
         with patch.object(Authenticator, '_verify_access_token',
-                          return_value=token_jwt):
+                          return_value=oauth_token):
             request = MagicMock()
             request.get_header = MagicMock(return_value="Bearer 12345")
             user = Authenticator.authenticate(request=request)
             Authenticator.\
                 _verify_access_token.assert_called_once_with("12345")
-            self.assertEqual('myemail@server.com', user.name)
+            self.assertEqual(user.name, oauth_token["email"])
 
         # Check OAuth prefix
         with patch.object(Authenticator, '_verify_access_token',
-                          return_value=token_jwt):
+                          return_value=oauth_token):
             request = MagicMock()
             request.get_header = MagicMock(return_value="OAuth 45678")
             user = Authenticator.authenticate(request=request)
@@ -94,33 +93,44 @@ class TestOAuthenticator(NIOTestCase):
                 _verify_access_token.assert_called_once_with("45678")
             self.assertEqual('myemail@server.com', user.name)
 
-        # patch _request_token and verify since _verify_access_token's purpose
-        # is to add error mgmt. to _request_token's result
-        with patch.object(Authenticator, '_request_token',
-                          return_value=token_jwt):
+        # patch _validate_token and verify since _verify_access_token's purpose
+        # is to add error mgmt. to _validate_token's result
+        with patch.object(Authenticator, '_validate_token',
+                          return_value=oauth_token):
             request = MagicMock()
             request.get_header = MagicMock(return_value="Bearer 12345")
             user = Authenticator.authenticate(request=request)
             Authenticator. \
-                _request_token.assert_called_once_with("12345")
+                _validate_token.assert_called_once_with("12345")
             self.assertEqual('myemail@server.com', user.name)
+
+    def test_header_missing(self):
+        """ Test missing authorization header.
+
+        Raises Unauthorized.
+        """
+        request = MagicMock(spec=Request)
+        request.get_header.return_value = None
+
+        with self.assertRaises(Unauthorized):
+            Authenticator.authenticate(request=request)
 
     def test_oAuthenticator2_invalid_prefix(self):
         """ Asserts that when header's prefix is not Bearer nor OAuth,
-        a Guest is returned """
+        Unauthorized is raised """
 
         # Check Bearer prefix
         request = MagicMock()
         request.get_header = MagicMock(return_value="NonBearer 12345")
-        user = Authenticator.authenticate(request=request)
-        self.assertEqual('Guest', user.name)
+        with self.assertRaises(Unauthorized):
+            Authenticator.authenticate(request=request)
 
     def test_verify_access_token_error(self):
         """ Asserts that when token returns an 'error_description' field,
         Unauthorized is raised """
-        token_jwt = {"error_description": "Invalid Scope"}
-        with patch.object(Authenticator, '_request_token',
-                          return_value=token_jwt):
+        oauth_token = {"error_description": "Invalid Scope"}
+        with patch.object(Authenticator, '_validate_token',
+                          return_value=oauth_token):
             request = MagicMock()
             request.get_header = MagicMock(return_value="OAuth 45678")
             with self.assertRaises(Unauthorized):
@@ -131,16 +141,16 @@ class TestOAuthenticator(NIOTestCase):
         is translated to an Unauthorized exception """
 
         with patch.object(Authenticator, 'verify',
-                          side_effect=InvalidToken):
+                          side_effect=Unauthorized):
             request = MagicMock()
             with self.assertRaises(Unauthorized):
                 Authenticator.authenticate(request=request)
 
     def test_request_access_failure(self):
-        """ Asserts that an exception raised by '_request_token' is translated
-        to an Unauthorized exception """
+        """ Asserts exception from _validate_token propagates to Authenticate
+        """
 
-        with patch.object(Authenticator, '_request_token',
+        with patch.object(Authenticator, '_validate_token',
                           side_effect=RuntimeError):
             request = MagicMock()
             request.get_header = MagicMock(return_value="OAuth 45678")
