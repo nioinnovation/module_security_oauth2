@@ -13,12 +13,6 @@ from nio.modules.security import Unauthorized
 from nio.modules.security.user import User
 
 
-class InvalidToken(Exception):
-
-    """ Invalid Token received """
-    pass
-
-
 class Authenticator(object):
 
     """ OAuth2 Authenticator
@@ -54,7 +48,7 @@ class Authenticator(object):
         In this case we are using a token info uri that returns info related
         to the token. This is the method implemented by Google
 
-        The OAuth2 spec do not really defined the method in which a Resource
+        The OAuth2 spec do not really define the method in which a Resource
         Server (nio) verifies a token with a OP (Google) although a work is
         in progress to define this interaction
 
@@ -63,25 +57,25 @@ class Authenticator(object):
         Also, we recommend using a openid scope as well
 
         Args:
-            request: web request
+            request (Request): web request
 
         Raises:
             Unauthorized: Failure to authenticate
         """
-        try:
-            token_jwt = cls.verify(request)
-            if token_jwt is not None:
-                get_nio_logger("Oauth2.Authenticator").debug(
-                    "Access token issued for accessing : {0}".
-                    format(token_jwt.get('scope')))
-                email = token_jwt.get('email', None)
-                # We are looking for a token created with email scope
-                if email is None:
-                    raise InvalidToken()
-            else:
-                return User()
-        except InvalidToken:
-            raise Unauthorized()
+
+        # obtain request's token
+        token_data = cls.verify(request)
+        get_nio_logger("Oauth2.Authenticator").debug(
+            "Access token issued for accessing : {0}".
+            format(token_data.get('scope')))
+
+        # extract email from token
+        email = token_data.get('email', None)
+        # We are looking for a token created with email scope
+        if email is None:
+            msg = "email scope data is invalid"
+            get_nio_logger("Oauth2.Authenticator").error(msg)
+            raise Unauthorized(msg)
 
         return User(name=email)
 
@@ -94,57 +88,85 @@ class Authenticator(object):
             request: web request
 
         Raises:
-            InvalidToken: token does not match expected format or provider
-                returned an error
             Unauthorized: Failure to verify token
         """
+        # make sure header is provided
         auth_header = request.get_header('authorization')
-        if auth_header is not None:
-            try:
-                scheme, token = auth_header.split(' ', 1)
-                # make sure scheme is allowed
-                if scheme.lower() in ['bearer', 'oauth']:
-                    # Verify Access Token
-                    return cls._verify_access_token(token)
-            except InvalidToken:
-                raise
-            except Exception:
-                get_nio_logger("Oauth2.Authenticator").exception(
-                    "Failed to verify token")
-                raise Unauthorized()
+        if not auth_header:
+            msg = "No 'Authorization' header present in request."
+            get_nio_logger("Oauth2.Authenticator").error(msg)
+            raise Unauthorized(msg)
 
-        return None
+        # extract scheme and parameters from header
+        try:
+            scheme, token = auth_header.split(' ', 1)
+        except:
+            msg = "'Authorization' header is invalid."
+            get_nio_logger("Oauth2.Authenticator").error(msg)
+            raise Unauthorized(msg)
+
+        # validate scheme
+        if scheme.lower() not in ['bearer', 'oauth']:
+            msg = "'Authorization' scheme: {} is invalid, " \
+                  "expected 'bearer' or 'oauth'.".format(scheme)
+            get_nio_logger("Oauth2.Authenticator").error(msg)
+            raise Unauthorized(msg)
+
+        # Verify Access Token
+        return cls._verify_access_token(token)
 
     @classmethod
     def _verify_access_token(cls, access_token):
-        """ Requests token from provider, if error_description is
-        present in provider's result an exception is raised
+        """ Verifies authorization token with provider
+
+        if error_description is present in provider's result
+        an exception is raised
 
         Args:
             access_token (str): token to validate with provider
 
         Raises:
-            InvalidToken: provider returned an error_description
+            Unauthorized: Failure to verify token
+
+        Returns:
+            resulting dictionary obtained from provider's response
         """
-        result = cls._request_token(access_token)
+        # validate token with provider
+        try:
+            result = cls._validate_token(access_token)
+        except Exception:
+            msg = "Failed to verify token"
+            get_nio_logger("Oauth2.Authenticator").exception(msg)
+            raise Unauthorized(msg)
+
+        # check if an error occurred
         if result.get('error_description') is not None:
-            # This is not a valid token.
-            get_nio_logger("Oauth2.Authenticator").error(
-                "Invalid Id Token : {0}".format(
-                    result.get('error_description')))
-            raise InvalidToken()
+            msg = "Invalid Id Token: {0}".\
+                format(result.get('error_description'))
+            get_nio_logger("Oauth2.Authenticator").error(msg)
+            raise Unauthorized(msg)
+
+        # return provider's response as a dictionary
         return result
 
     @classmethod
-    def _request_token(cls, access_token):
-        """ Request token info by sending access_token to a validating uri
+    def _validate_token(cls, access_token):
+        """ Validate token info by sending access_token to a validating uri
 
         Args:
             access_token (str): token to validate with provider
+
+        Raises:
+            Unauthorized: Failure to verify token
 
         Returns:
             resulting dictionary obtained from provider's response
         """
         url = (cls.validate_uri % access_token)
         response = requests.request('GET', url)
+        if not response.text:
+            msg = "Failure to validate access token"
+            get_nio_logger("Oauth2.Authenticator").error(msg)
+            raise Unauthorized(msg)
+
         return json.loads(response.text)
